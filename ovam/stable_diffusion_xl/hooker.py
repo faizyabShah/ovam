@@ -1,5 +1,5 @@
 from diffusers import StableDiffusionXLPipeline
-from ..stable_diffusion.hooker import StableDiffusionHooker
+from ..stable_diffusion.pipeline_hooker import StableDiffusionHooker
 from ..stable_diffusion.block_hooker import CrossAttentionHooker
 from ..stable_diffusion.locator import UNetCrossAttentionLocator
 from .daam_module import StableDiffusionXLDAAM
