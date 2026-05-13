@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, List
 import torch
 
 from ..base.block_hooker import BlockHooker
+from ..base.attention_storage import OnlineAttentionStorage   # ← add this import
 from .daam_block import CrossAttentionDAAMBlock
 
 if TYPE_CHECKING:
@@ -23,6 +24,7 @@ class CrossAttentionHooker(BlockHooker):
         self._current_hidden_state: List["torch.tensor"] = []
         self.store_conditional_hidden_states = store_conditional_hidden_states
         self.store_unconditional_hidden_states = store_unconditional_hidden_states
+        self.key_states = OnlineAttentionStorage(name=name)   # ← new
 
     def _hooked_forward(
         hk_self: "BlockHooker",
@@ -30,48 +32,48 @@ class CrossAttentionHooker(BlockHooker):
         hidden_states: "torch.Tensor",
         **kwargs,
     ):
-        """Hooked forward of the cross attention module.
-
-        Stores the hidden states and perform the original attention.
-        """
-        # Save the hidden states
-        # [ h*w ] x n_heads (The original size is {1, 2} x [h*w] x n_heads)
         if hk_self.store_unconditional_hidden_states:
-            hk_self._current_hidden_state.append(hidden_states[0])
+            hk_self._current_hidden_state.append(hidden_states[0].cpu())
         if hk_self.store_conditional_hidden_states:
             assert hidden_states.shape[0] > 1
-            hk_self._current_hidden_state.append(hidden_states[1])
+            hk_self._current_hidden_state.append(hidden_states[1].cpu())
 
         return hk_self.monkey_super("forward", hidden_states, **kwargs)
 
     def store_hidden_states(self) -> None:
-        """Stores the hidden states in the parent trace"""
         if not self._current_hidden_state:
             return
 
-        queries = []  # This loop can be vectorized, but has a small impact
-        # Thus it is not executed during the optimization process
+        device = self.module.to_q.weight.device
+        is_self_attn = "attn1" in self.name   # ← attn1 = self-attention
+
+        queries = []
+        keys = []
+
         for c in self._current_hidden_state:
-            query = self.module.to_q(c.unsqueeze(0))
+            c_gpu = c.unsqueeze(0).to(device)
+
+            query = self.module.to_q(c_gpu)
             query = self.module.head_to_batch_dim(query)
-            queries.append(query)
+            queries.append(query.cpu())
 
-        # n_epochs x heads x inner_dim x (latent_size = 64)
-        current_hidden_states = torch.stack(queries)
+            if is_self_attn:                          # ← only for attn1
+                key = self.module.to_k(c_gpu)
+                key = self.module.head_to_batch_dim(key)
+                keys.append(key.cpu())
 
-        self.hidden_states.store(current_hidden_states)
+        self.hidden_states.store(torch.stack(queries))
 
-        self._current_hidden_state = []  # Clear the current hidden states
+        if is_self_attn and keys:                     # ← store keys for attn1
+            self.key_states.store(torch.stack(keys))
+
+        self._current_hidden_state = []
+
+    def clear(self) -> None:
+        super().clear()
+        self.key_states.clear()                       # ← clear keys too
 
     def daam_block(self, **kwargs) -> "CrossAttentionDAAMBlock":
-        """Builds a DAAMBlock with the current hidden states.
-
-        Arguments
-        ---------
-        **kwargs:
-            Arguments passed to the `DAAMBlock` constructor.
-        """
-
         return CrossAttentionDAAMBlock(
             to_k=self.module.to_k,
             hidden_states=self.hidden_states,
