@@ -80,16 +80,13 @@ class StableDiffusionHooker(PipelineHooker):
 
                 epoch_maps = []
                 for q, k in zip(queries_per_image, keys_per_image):
-                    # q, k: (n_heads, seq_len, head_dim)
                     scale = q.shape[-1] ** -0.5
-                    # (n_heads, seq_len, seq_len)
-                    attn = torch.bmm(
-                        q.float(), k.float().transpose(-1, -2)
-                    ) * scale
-                    attn = attn.softmax(dim=-1)
-                    # average attention received per position across heads
-                    # → (seq_len,) → (h, w)
-                    spatial = attn.mean(dim=0).mean(dim=0).reshape(h, w)
+                    head_maps = []
+                    for q_h, k_h in zip(q, k):               # one head at a time
+                        a = (q_h.float() @ k_h.float().T) * scale   # (4096, 4096)
+                        a = a.softmax(dim=-1).mean(dim=0)            # (4096,) immediately
+                        head_maps.append(a)
+                    spatial = torch.stack(head_maps).mean(0).reshape(h, w)
                     epoch_maps.append(spatial)
 
                 # average across timesteps

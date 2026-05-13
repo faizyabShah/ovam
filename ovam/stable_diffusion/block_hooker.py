@@ -39,13 +39,13 @@ class CrossAttentionHooker(BlockHooker):
             hk_self._current_hidden_state.append(hidden_states[1].cpu())
 
         return hk_self.monkey_super("forward", hidden_states, **kwargs)
-
+    
     def store_hidden_states(self) -> None:
         if not self._current_hidden_state:
             return
 
         device = self.module.to_q.weight.device
-        is_self_attn = "attn1" in self.name   # ← attn1 = self-attention
+        is_self_attn = "attn1" in self.name
 
         queries = []
         keys = []
@@ -57,14 +57,16 @@ class CrossAttentionHooker(BlockHooker):
             query = self.module.head_to_batch_dim(query)
             queries.append(query.cpu())
 
-            if is_self_attn:                          # ← only for attn1
+            # only compute keys for 64x64 blocks (seq_len=4096)
+            # skip all smaller resolution attn1 blocks
+            if is_self_attn and c.shape[0] == 4096:
                 key = self.module.to_k(c_gpu)
                 key = self.module.head_to_batch_dim(key)
                 keys.append(key.cpu())
 
         self.hidden_states.store(torch.stack(queries))
 
-        if is_self_attn and keys:                     # ← store keys for attn1
+        if is_self_attn and keys:
             self.key_states.store(torch.stack(keys))
 
         self._current_hidden_state = []
