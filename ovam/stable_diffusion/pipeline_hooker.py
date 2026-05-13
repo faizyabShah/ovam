@@ -198,7 +198,7 @@ class StableDiffusionHooker(PipelineHooker):
         }
         var_block_kwargs.update(block_kwargs)
 
-        return super().daam(
+        return self.daam(
             module_kwargs=var_module_kwargs,
             block_kwargs=var_block_kwargs,
         )
