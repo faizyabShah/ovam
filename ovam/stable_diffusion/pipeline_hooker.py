@@ -114,6 +114,17 @@ class StableDiffusionHooker(PipelineHooker):
 
         return result
 
+    def daam(self, module_kwargs, block_kwargs) -> "StableDiffusionDAAM":
+        """Override to exclude attn1 blocks from OVAM computation."""
+        ovam_hookers = [
+            h for h in self.cross_attention_hookers
+            if "attn2" in h.name
+        ]
+        blocks = [hook.daam_block(**block_kwargs) for hook in ovam_hookers]
+        return self.daam_module_class(
+            blocks=blocks, pipeline=self.pipeline, **module_kwargs
+        )
+
     def get_ovam_callable(
         self,
         heads_epochs_activation: "ActivationTypeVar" = "token_softmax",  # "linear" for linear daam,
