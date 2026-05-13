@@ -115,7 +115,7 @@ class CrossAttentionDAAMBlock(DAAMBlock):
             attentions = []  #  List of heatmaps
             for query in batch_image:  #  ()
                 attention = self._compute_attention(
-                    query, key
+                    query.to(key.device), key
                 )  # shape: (heads, tokens, height, width)
                 attentions.append(attention)
             # END of TODO: Vectorize loop
