@@ -47,58 +47,39 @@ class StableDiffusionHooker(PipelineHooker):
     def cross_attention_hookers(self):
         return self.module[:-1]
 
-    def get_self_attention_map(
-        self,
-        size: Optional[Tuple[int, int]] = None,
-    ) -> torch.Tensor:
-        """
-        Compute self-attention map from stored attn1 hidden states.
-        Uses only 64x64 blocks (highest resolution in SD1.5 UNet)
-        as per the OVAM paper Section 3.4.
-
-        Returns a (H, W) tensor — or upsampled to `size` if provided.
-        """
-        # only attn1 hookers have key_states stored
+    def get_self_attention_map(self, size=None):
         self_attn_hookers = [
             h for h in self.cross_attention_hookers
             if "attn1" in h.name and len(h.key_states) > 0
         ]
 
+        device = next(self.pipeline.unet.parameters()).device  # get GPU
         all_maps = []
 
         for hooker in self_attn_hookers:
             for queries_per_image, keys_per_image in zip(
                 hooker.hidden_states, hooker.key_states
             ):
-                # shape: (n_epochs, n_heads, seq_len, head_dim)
                 seq_len = queries_per_image.shape[-2]
                 h = w = int(math.sqrt(seq_len))
-
-                # paper: highest-resolution blocks only (64x64)
                 if h != 64:
                     continue
 
                 epoch_maps = []
                 for q, k in zip(queries_per_image, keys_per_image):
+                    q = q.to(device).float()   # ← move to GPU
+                    k = k.to(device).float()   # ← move to GPU
                     scale = q.shape[-1] ** -0.5
                     head_maps = []
-                    for q_h, k_h in zip(q, k):               # one head at a time
-                        a = (q_h.float() @ k_h.float().T) * scale   # (4096, 4096)
-                        a = a.softmax(dim=-1).mean(dim=0)            # (4096,) immediately
+                    for q_h, k_h in zip(q, k):
+                        a = (q_h @ k_h.T) * scale
+                        a = a.softmax(dim=-1).mean(dim=0)
                         head_maps.append(a)
                     spatial = torch.stack(head_maps).mean(0).reshape(h, w)
-                    epoch_maps.append(spatial)
+                    epoch_maps.append(spatial.cpu())   # ← back to CPU immediately
 
-                # average across timesteps
-                all_maps.append(torch.stack(epoch_maps).mean(0))  # (h, w)
+                all_maps.append(torch.stack(epoch_maps).mean(0))
 
-        if not all_maps:
-            raise RuntimeError(
-                "No self-attention maps found. "
-                "Make sure to use locator_kwargs={'locate_attn1': True}."
-            )
-
-        # average across all 64x64 blocks → (h, w)
         result = torch.stack(all_maps).mean(0)
 
         if size is not None:
